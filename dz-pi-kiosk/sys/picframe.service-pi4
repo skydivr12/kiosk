@@ -1,0 +1,16 @@
+[Unit]
+Description=PictureFrame on Pi4
+After=multi-user.target
+
+[Service]
+Type=idle
+
+User=root
+ExecStart=xinit /usr/bin/python3 /home/pi/picframe_data/run_start.py /home/pi/picframe_data/config/configuration.yaml
+#Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+
+

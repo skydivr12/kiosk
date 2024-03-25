@@ -1,0 +1,9 @@
+[Unit]
+Description=PictureFrame on Pi3
+
+[Service]
+ExecStart=/home/pi/.local/bin/picframe ~/picframe_data/config/configuration.yaml
+#Restart=always
+
+[Install]
+WantedBy=default.target

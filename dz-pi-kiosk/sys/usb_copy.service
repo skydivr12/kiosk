@@ -1,0 +1,13 @@
+[Unit]
+Description=USB Copy Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/bin/usb_copy
+
+[Install]
+WantedBy=multi-user.target
+
+
+

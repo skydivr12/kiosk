@@ -1,0 +1,15 @@
+[Unit]
+Description=Video Kiosk
+Wants=graphical.target
+After=graphical.target
+
+[Service]
+User=pi
+Environment="DISPLAY=:0"
+ExecStart=/bin/bash /usr/bin/video-kiosk
+Restart=always
+
+[Install]
+WantedBy=graphical.target
+
+

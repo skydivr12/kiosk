@@ -1,0 +1,16 @@
+[Unit]
+Description=Listen for shutdown script
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/bin/listen_for_shutdown
+WorkingDirectory=/home/pi
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=listen_for_shutdown
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+

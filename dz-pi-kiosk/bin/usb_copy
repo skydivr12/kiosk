@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+
+import subprocess
+import os
+import shutil
+import hashlib
+from datetime import datetime
+import time
+import threading
+from gpiozero import LED
+
+debug = False
+
+def debug_echo(*args):
+    if debug:
+        print(*args)
+
+# Example usage:
+debug_echo("Debug message 1")
+debug_echo("Debug message 2")
+
+
+# Global variable to control LED usage
+led_enabled = False
+
+# Initialize LED
+led = LED(18)  # Assuming the LED is connected to GPIO pin 18
+
+# Flash interval (adjust as needed)
+FLASH_INTERVAL = 0.1  # in seconds
+
+# Image file types
+image_file_types = ["jpg", "jpeg", "png", "gif", "heic", "heif", "bmp", "tif", "tiff"]
+
+# Video file types
+video_file_types = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp"]
+
+
+def populate_array():
+    partitions = []
+    command = "lsblk -o NAME,TYPE --noheadings --ascii"
+    output = subprocess.check_output(command, shell=True, text=True)
+    lines = output.split('\n')
+    for line in lines:
+        line = line.strip().replace('`-', '').replace('|-', '')
+        columns = line.strip().split()
+        if len(columns) == 2 and columns[1] == "part" and "mmcblk0" not in columns[0]:
+            partitions.append(columns[0])
+    return partitions
+
+def mount_drives(partitions):
+    for partition in partitions:
+        mount_point = f"/mnt/{partition}"
+        try:
+            subprocess.run(["sudo", "mkdir", "-p", mount_point], check=True)
+            subprocess.run(["sudo", "mount", f"/dev/{partition}", mount_point], check=True)
+            print(f"Drive {partition} mounted at {mount_point}")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to mount drive {partition} at {mount_point}: {e}")
+
+def unmount_drives(partitions):
+    for partition in partitions:
+        mount_point = f"/mnt/{partition}"
+        try:
+            subprocess.run(["sudo", "umount", mount_point], check=True)
+            subprocess.run(["sudo", "rmdir", mount_point], check=True)
+            print(f"Drive {partition} unmounted and mount point {mount_point} removed")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to unmount drive {partition} or remove mount point {mount_point}: {e}")
+
+def delete_empty_subdirectories(parent_dir):
+    # Walk through the parent directory and its subdirectories
+    for root, dirs, _ in os.walk(parent_dir, topdown=False):
+        for dir_name in dirs:
+            dir_path = os.path.join(root, dir_name)
+            # Check if the subdirectory is empty
+            if not os.listdir(dir_path):
+                # If empty, remove the subdirectory
+                try:
+                    os.rmdir(dir_path)
+                    print(f"Empty directory deleted: {dir_path}")
+                except OSError as e:
+                    print(f"Error while deleting directory {dir_path}: {e}")
+
+def copy_media_files(partitions):
+    date = datetime.now().strftime("%Y-%m-%d")
+    image_parent_dir = "/home/pi/Pictures"
+    video_parent_dir = "/home/pi/Videos"
+    image_destination_dir = os.path.join(image_parent_dir, date)
+    video_destination_dir = video_parent_dir
+    os.makedirs(image_destination_dir, exist_ok=True)
+    os.makedirs(video_destination_dir, exist_ok=True)
+
+    copied_files = set()  # Set to store copied file checksums
+    video_files_copied = False  # Flag to track if any video files are copied
+
+    # Function to check for duplicates in parent directory and its subdirectories
+    def check_for_duplicates(parent_dir, file_types):
+        for root, _, files in os.walk(parent_dir):
+            for file in files:
+                if file.lower().split(".")[-1] in file_types:
+                    file_path = os.path.join(root, file)
+                    with open(file_path, "rb") as f:
+                        checksum = hashlib.md5(f.read()).hexdigest()
+                    copied_files.add(checksum)
+
+    # Check for duplicates in parent directories
+    check_for_duplicates(image_parent_dir, image_file_types)
+    check_for_duplicates(video_parent_dir, video_file_types)
+
+    # Function to copy files
+    def copy_files(src_dir, dest_dir, file_types):
+        nonlocal video_files_copied
+        for root, _, files in os.walk(src_dir):
+            for file in files:
+                if file.lower().split(".")[-1] in file_types:
+                    src_file_path = os.path.join(root, file)
+                    with open(src_file_path, "rb") as f:
+                        src_checksum = hashlib.md5(f.read()).hexdigest()
+
+                    if src_checksum in copied_files:
+                        print(f"Duplicate file: {src_file_path}")
+                        continue  # Skip copying if the file is a duplicate
+
+                    dest_file_path = os.path.join(dest_dir, file)
+                    shutil.copy(src_file_path, dest_dir)
+                    print(f"File copied: {src_file_path}")
+
+                    # Check if the copied file is a video file
+                    if file.lower().split(".")[-1] in video_file_types:
+                        video_files_copied = True
+
+    for partition in partitions:
+        mount_point = f"/mnt/{partition}"
+        copy_files(mount_point, image_destination_dir, image_file_types)
+        copy_files(mount_point, video_destination_dir, video_file_types)
+
+    # Copying is complete, check for empty subdirectories and delete them
+    delete_empty_subdirectories(image_parent_dir)
+    delete_empty_subdirectories(video_parent_dir)
+
+    print(f"Media files copied to {image_destination_dir} and {video_destination_dir}")
+
+    # If video files are copied and the video-kiosk.service is active, restart the service
+    if video_files_copied and is_service_active("video-kiosk.service"):
+        subprocess.run(["sudo", "systemctl", "restart", "video-kiosk.service"])
+        print("Restarted video-kiosk.service")
+
+    return True
+
+
+def old_copy_media_files(partitions):
+    date = datetime.now().strftime("%Y-%m-%d")
+    image_parent_dir = "/home/pi/Pictures"
+    video_parent_dir = "/home/pi/Videos"
+    image_destination_dir = os.path.join(image_parent_dir, date)
+    video_destination_dir = video_parent_dir
+    os.makedirs(image_destination_dir, exist_ok=True)
+    os.makedirs(video_destination_dir, exist_ok=True)
+
+    copied_files = set()  # Set to store copied file checksums
+
+    # Function to check for duplicates in parent directory and its subdirectories
+    def check_for_duplicates(parent_dir, file_types):
+        for root, _, files in os.walk(parent_dir):
+            for file in files:
+                if file.lower().split(".")[-1] in file_types:
+                    file_path = os.path.join(root, file)
+                    with open(file_path, "rb") as f:
+                        checksum = hashlib.md5(f.read()).hexdigest()
+                    copied_files.add(checksum)
+
+    # Check for duplicates in parent directories
+    check_for_duplicates(image_parent_dir, image_file_types)
+    check_for_duplicates(video_parent_dir, video_file_types)
+
+    # Function to copy files
+    def copy_files(src_dir, dest_dir, file_types):
+        for root, _, files in os.walk(src_dir):
+            for file in files:
+                if file.lower().split(".")[-1] in file_types:
+                    src_file_path = os.path.join(root, file)
+                    with open(src_file_path, "rb") as f:
+                        src_checksum = hashlib.md5(f.read()).hexdigest()
+
+                    if src_checksum in copied_files:
+                        print(f"Duplicate file: {src_file_path}")
+                        continue  # Skip copying if the file is a duplicate
+
+                    dest_file_path = os.path.join(dest_dir, file)
+                    shutil.copy(src_file_path, dest_dir)
+                    print(f"File copied: {src_file_path}")
+
+    for partition in partitions:
+        mount_point = f"/mnt/{partition}"
+        copy_files(mount_point, image_destination_dir, image_file_types)
+        copy_files(mount_point, video_destination_dir, video_file_types)
+
+    # Copying is complete, check for empty subdirectories and delete them
+    delete_empty_subdirectories(image_parent_dir)
+    delete_empty_subdirectories(video_parent_dir)
+
+    print(f"Media files copied to {image_destination_dir} and {video_destination_dir}")
+    return True
+
+def copy_media_files_original(partitions):
+    date = datetime.now().strftime("%Y-%m-%d")
+    image_destination_dir = f"/home/pi/Pictures/{date}"
+    video_destination_dir = f"/home/pi/Videos/{date}"
+    os.makedirs(image_destination_dir, exist_ok=True)
+    os.makedirs(video_destination_dir, exist_ok=True)
+
+    copied_files = set()  # Set to store copied file checksums
+
+    # Function to copy files
+    def copy_files(src_dir, dest_dir, file_types):
+        for root, _, files in os.walk(src_dir):
+            for file in files:
+                if file.lower().split(".")[-1] in file_types:
+                    src_file_path = os.path.join(root, file)
+                    with open(src_file_path, "rb") as f:
+                        src_checksum = hashlib.md5(f.read()).hexdigest()
+
+                    dest_file_path = os.path.join(dest_dir, file)
+                    if os.path.exists(dest_file_path):
+                        with open(dest_file_path, "rb") as f:
+                            dest_checksum = hashlib.md5(f.read()).hexdigest()
+
+                        if src_checksum == dest_checksum:
+                            print(f"Duplicate file: {src_file_path}")
+                            continue  # Skip copying if the file is a duplicate
+
+                    shutil.copy(src_file_path, dest_dir)
+                    print(f"File copied: {src_file_path}")
+
+    for partition in partitions:
+        mount_point = f"/mnt/{partition}"
+        copy_files(mount_point, image_destination_dir, image_file_types)
+        copy_files(mount_point, video_destination_dir, video_file_types)
+
+    print(f"Media files copied to {image_destination_dir} and {video_destination_dir}")
+    return True  # Indicate that copying is complete
+
+# Function to control LED usage
+def control_led(enable):
+    global led_enabled
+    led_enabled = enable
+
+# Function to flash LED
+def flash_led(interval):
+    try:
+        while led_enabled:
+            led.on()               # Turn on LED
+            time.sleep(interval)  # Wait for the specified interval
+            led.off()             # Turn off LED
+            time.sleep(interval)  # Wait for the specified interval
+    except KeyboardInterrupt:
+        led.off()  # Turn off LED on keyboard interrupt
+
+def is_service_active(service_name):
+    try:
+        output = subprocess.check_output(["systemctl", "is-active", service_name], text=True)
+        return output.strip() == "active"
+    except subprocess.CalledProcessError:
+        return False
+
+
+# Main function
+def main():
+    try:
+        if led_enabled:
+            led.on()  # Turn on LED
+        partitions = populate_array()
+        print(partitions)
+        mount_drives(partitions)
+
+        # Start the flasher thread
+        flasher_thread = threading.Thread(target=flash_led, args=(FLASH_INTERVAL,))
+        flasher_thread.start()
+
+        # Copy files and get the result
+        copying_complete = copy_media_files(partitions)
+
+        # Stop the flasher thread
+        control_led(False)
+        flasher_thread.join()  # Wait for the flasher thread to finish
+
+        if copying_complete:
+            unmount_drives(partitions)
+    except KeyboardInterrupt:
+        pass  # Do nothing on keyboard interrupt
+    finally:
+        led.off()  # Turn off LED at the end
+
+if __name__ == "__main__":
+    main()
+
+
+

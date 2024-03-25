@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Specify the directory where video files are located
+video_dir="/home/pi/Videos"
+# Specify the location to save the playlist file
+playlist_file="/home/pi/playlist.m3u"
+video_file_types=("mp4" "mov" "avi" "mkv" "wmv" "flv" "webm" "3gp")
+
+get_playlist() {
+    # Ensure the playlist file is empty before adding entries
+    > "$playlist_file"
+
+    # Add files to playlist
+    for type in "${video_file_types[@]}"; do
+        find "$video_dir" -type f -iname "*.$type" | while read -r file; do
+            echo "$file" >> "$playlist_file"
+        done
+    done
+    echo "Playlist generated at $playlist_file"
+}
+
+get_playlist
+vlc -f -L --no-audio --no-video-title-show /home/pi/playlist.m3u
+
+
